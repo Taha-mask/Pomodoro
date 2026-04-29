@@ -1,0 +1,1174 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:file_picker/file_picker.dart';
+
+void main() {
+  runApp(const PomodoroApp());
+}
+
+class PomodoroApp extends StatelessWidget {
+  const PomodoroApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Pomodoro',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFE74C3C),
+          brightness: Brightness.dark,
+          surface: const Color(0xFF16213E),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF16213E),
+        navigationBarTheme: NavigationBarThemeData(
+          indicatorColor: const Color(0xFFE74C3C).withValues(alpha: 0.3),
+          labelTextStyle: WidgetStateProperty.all(
+            const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          iconTheme: WidgetStateProperty.all(
+            const IconThemeData(color: Colors.white70),
+          ),
+        ),
+      ),
+      home: const PomodoroHome(),
+    );
+  }
+}
+
+enum Phase { idle, work, breakTime }
+
+class PomodoroHome extends StatefulWidget {
+  const PomodoroHome({super.key});
+
+  @override
+  State<PomodoroHome> createState() => _PomodoroHomeState();
+}
+
+class _PomodoroHomeState extends State<PomodoroHome> {
+  int _currentTab = 0;
+
+  int workMinutes = 25;
+  int breakMinutes = 5;
+  int totalCycles = 4;
+
+  Phase currentPhase = Phase.idle;
+  bool isRunning = false;
+  int currentCycle = 0;
+  int remainingSeconds = 25 * 60;
+  Timer? _timer;
+
+  String? _soundPath;
+  final _player = AudioPlayer();
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickSound() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac'],
+    );
+    if (result != null && result.files.single.path != null) {
+      setState(() => _soundPath = result.files.single.path);
+    }
+  }
+
+  Future<void> _playSound() async {
+    if (_soundPath == null) return;
+    if (!File(_soundPath!).existsSync()) return;
+    await _player.stop();
+    await _player.play(DeviceFileSource(_soundPath!));
+  }
+
+  void _startSession() {
+    if (!isRunning && currentPhase == Phase.idle) {
+      setState(() {
+        currentPhase = Phase.work;
+        currentCycle = 1;
+        remainingSeconds = workMinutes * 60;
+        _currentTab = 0;
+      });
+    }
+    _timer?.cancel();
+    setState(() => isRunning = true);
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (remainingSeconds > 0) {
+        setState(() => remainingSeconds--);
+      } else {
+        _onPhaseComplete();
+      }
+    });
+  }
+
+  void _onPhaseComplete() {
+    _timer?.cancel();
+    _playSound();
+    if (currentPhase == Phase.work) {
+      if (currentCycle >= totalCycles) {
+        setState(() {
+          isRunning = false;
+          currentPhase = Phase.idle;
+          currentCycle = 0;
+          remainingSeconds = workMinutes * 60;
+        });
+        _showDoneDialog();
+      } else {
+        setState(() {
+          currentPhase = Phase.breakTime;
+          remainingSeconds = breakMinutes * 60;
+          _currentTab = 1;
+        });
+        _startSession();
+      }
+    } else {
+      setState(() {
+        currentPhase = Phase.work;
+        currentCycle++;
+        remainingSeconds = workMinutes * 60;
+        _currentTab = 0;
+      });
+      _startSession();
+    }
+  }
+
+  void _pause() {
+    _timer?.cancel();
+    setState(() => isRunning = false);
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    setState(() {
+      isRunning = false;
+      currentPhase = Phase.idle;
+      currentCycle = 0;
+      remainingSeconds = workMinutes * 60;
+    });
+  }
+
+  void _showDoneDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF0F3460),
+        title: const Text('انتهيت! 🎉', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'أتمت $totalCycles دورة بومودورو بنجاح!',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('تمام', style: TextStyle(color: Color(0xFFE74C3C))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String get _timeDisplay {
+    final m = remainingSeconds ~/ 60;
+    final s = remainingSeconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  double get _progress {
+    final total = currentPhase == Phase.work
+        ? workMinutes * 60
+        : currentPhase == Phase.breakTime
+            ? breakMinutes * 60
+            : workMinutes * 60;
+    if (total == 0) return 0;
+    return 1 - (remainingSeconds / total);
+  }
+
+  Color get _phaseColor {
+    return currentPhase == Phase.breakTime
+        ? const Color(0xFF2ECC71)
+        : const Color(0xFFE74C3C);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: IndexedStack(
+          index: _currentTab,
+          children: [
+            _WorkTab(
+              workMinutes: workMinutes,
+              onMinutesChanged: (v) {
+                setState(() {
+                  workMinutes = v;
+                  if (currentPhase == Phase.idle) remainingSeconds = v * 60;
+                });
+              },
+              timeDisplay: _timeDisplay,
+              progress: _progress,
+              phaseColor: _phaseColor,
+              currentPhase: currentPhase,
+              isRunning: isRunning,
+              currentCycle: currentCycle,
+              totalCycles: totalCycles,
+              onStart: _startSession,
+              onPause: _pause,
+              onReset: _reset,
+            ),
+            _BreakTab(
+              breakMinutes: breakMinutes,
+              onMinutesChanged: (v) => setState(() => breakMinutes = v),
+              timeDisplay: _timeDisplay,
+              progress: _progress,
+              phaseColor: _phaseColor,
+              currentPhase: currentPhase,
+              isRunning: isRunning,
+              currentCycle: currentCycle,
+              totalCycles: totalCycles,
+              onStart: _startSession,
+              onPause: _pause,
+              onReset: _reset,
+            ),
+            _CyclesTab(
+              totalCycles: totalCycles,
+              currentCycle: currentCycle,
+              currentPhase: currentPhase,
+              onCyclesChanged: (v) => setState(() => totalCycles = v),
+              soundPath: _soundPath,
+              onPickSound: _pickSound,
+              onPreviewSound: _playSound,
+              onClearSound: () => setState(() => _soundPath = null),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentTab,
+        onDestinationSelected: (i) => setState(() => _currentTab = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.timer_outlined),
+            selectedIcon: Icon(Icons.timer, color: Color(0xFFE74C3C)),
+            label: 'Work',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.coffee_outlined),
+            selectedIcon: Icon(Icons.coffee, color: Color(0xFF2ECC71)),
+            label: 'Break',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.repeat_outlined),
+            selectedIcon: Icon(Icons.repeat, color: Color(0xFF3498DB)),
+            label: 'Cycles',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Work Tab ────────────────────────────────────────────────────────────────
+
+class _WorkTab extends StatelessWidget {
+  final int workMinutes;
+  final ValueChanged<int> onMinutesChanged;
+  final String timeDisplay;
+  final double progress;
+  final Color phaseColor;
+  final Phase currentPhase;
+  final bool isRunning;
+  final int currentCycle;
+  final int totalCycles;
+  final VoidCallback onStart;
+  final VoidCallback onPause;
+  final VoidCallback onReset;
+
+  const _WorkTab({
+    required this.workMinutes,
+    required this.onMinutesChanged,
+    required this.timeDisplay,
+    required this.progress,
+    required this.phaseColor,
+    required this.currentPhase,
+    required this.isRunning,
+    required this.currentCycle,
+    required this.totalCycles,
+    required this.onStart,
+    required this.onPause,
+    required this.onReset,
+  });
+
+  bool get _isActive => currentPhase == Phase.work;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          const SizedBox(height: 32),
+          const Text(
+            'Work Timer',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          if (currentCycle > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Cycle $currentCycle / $totalCycles',
+              style: TextStyle(color: phaseColor, fontSize: 14),
+            ),
+          ],
+          const SizedBox(height: 40),
+          _CircularTimer(
+            timeDisplay: _isActive ? timeDisplay : _formatMinutes(workMinutes),
+            progress: _isActive ? progress : 0,
+            color: const Color(0xFFE74C3C),
+            isActive: _isActive,
+          ),
+          const SizedBox(height: 40),
+          if (!isRunning || !_isActive)
+            _MinutePicker(
+              label: 'مدة الشغل',
+              minutes: workMinutes,
+              onChanged: onMinutesChanged,
+              color: const Color(0xFFE74C3C),
+              enabled: currentPhase == Phase.idle,
+            ),
+          const Spacer(),
+          _ControlButtons(
+            isRunning: isRunning && _isActive,
+            currentPhase: currentPhase,
+            onStart: onStart,
+            onPause: onPause,
+            onReset: onReset,
+            color: const Color(0xFFE74C3C),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  String _formatMinutes(int m) => '${m.toString().padLeft(2, '0')}:00';
+}
+
+// ─── Break Tab ───────────────────────────────────────────────────────────────
+
+class _BreakTab extends StatelessWidget {
+  final int breakMinutes;
+  final ValueChanged<int> onMinutesChanged;
+  final String timeDisplay;
+  final double progress;
+  final Color phaseColor;
+  final Phase currentPhase;
+  final bool isRunning;
+  final int currentCycle;
+  final int totalCycles;
+  final VoidCallback onStart;
+  final VoidCallback onPause;
+  final VoidCallback onReset;
+
+  const _BreakTab({
+    required this.breakMinutes,
+    required this.onMinutesChanged,
+    required this.timeDisplay,
+    required this.progress,
+    required this.phaseColor,
+    required this.currentPhase,
+    required this.isRunning,
+    required this.currentCycle,
+    required this.totalCycles,
+    required this.onStart,
+    required this.onPause,
+    required this.onReset,
+  });
+
+  bool get _isActive => currentPhase == Phase.breakTime;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          const SizedBox(height: 32),
+          const Text(
+            'Break Timer',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          if (currentCycle > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Cycle $currentCycle / $totalCycles',
+              style: TextStyle(color: phaseColor, fontSize: 14),
+            ),
+          ],
+          const SizedBox(height: 40),
+          _CircularTimer(
+            timeDisplay: _isActive ? timeDisplay : _formatMinutes(breakMinutes),
+            progress: _isActive ? progress : 0,
+            color: const Color(0xFF2ECC71),
+            isActive: _isActive,
+          ),
+          const SizedBox(height: 40),
+          if (!isRunning || !_isActive)
+            _MinutePicker(
+              label: 'مدة الراحة',
+              minutes: breakMinutes,
+              onChanged: onMinutesChanged,
+              color: const Color(0xFF2ECC71),
+              enabled: currentPhase == Phase.idle,
+            ),
+          const Spacer(),
+          _ControlButtons(
+            isRunning: isRunning && _isActive,
+            currentPhase: currentPhase,
+            onStart: onStart,
+            onPause: onPause,
+            onReset: onReset,
+            color: const Color(0xFF2ECC71),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  String _formatMinutes(int m) => '${m.toString().padLeft(2, '0')}:00';
+}
+
+// ─── Cycles Tab ──────────────────────────────────────────────────────────────
+
+class _CyclesTab extends StatelessWidget {
+  final int totalCycles;
+  final int currentCycle;
+  final Phase currentPhase;
+  final ValueChanged<int> onCyclesChanged;
+  final String? soundPath;
+  final VoidCallback onPickSound;
+  final VoidCallback onPreviewSound;
+  final VoidCallback onClearSound;
+
+  const _CyclesTab({
+    required this.totalCycles,
+    required this.currentCycle,
+    required this.currentPhase,
+    required this.onCyclesChanged,
+    required this.soundPath,
+    required this.onPickSound,
+    required this.onPreviewSound,
+    required this.onClearSound,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          const SizedBox(height: 32),
+          const Text(
+            'Cycles',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'اختار كام مرة تتعاد الدورة',
+            style: TextStyle(color: Colors.white54, fontSize: 14),
+          ),
+          const SizedBox(height: 60),
+          _CycleSelector(
+            value: totalCycles,
+            onChanged: currentPhase == Phase.idle ? onCyclesChanged : null,
+          ),
+          const SizedBox(height: 60),
+          if (currentCycle > 0) ...[
+            const Text(
+              'Progress',
+              style: TextStyle(color: Colors.white54, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            _CycleProgress(
+              currentCycle: currentCycle,
+              totalCycles: totalCycles,
+              currentPhase: currentPhase,
+            ),
+          ],
+          const Spacer(),
+          _SoundPickerCard(
+            soundPath: soundPath,
+            onPick: onPickSound,
+            onPreview: onPreviewSound,
+            onClear: onClearSound,
+          ),
+          const SizedBox(height: 16),
+          if (currentPhase == Phase.idle)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF3498DB).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF3498DB).withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Color(0xFF3498DB), size: 20),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'كل دورة = شغل + راحة\nابدأ من تاب Work',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 13,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Shared Widgets ──────────────────────────────────────────────────────────
+
+class _CircularTimer extends StatelessWidget {
+  final String timeDisplay;
+  final double progress;
+  final Color color;
+  final bool isActive;
+
+  const _CircularTimer({
+    required this.timeDisplay,
+    required this.progress,
+    required this.color,
+    required this.isActive,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 240,
+      height: 240,
+      child: CustomPaint(
+        painter: _RingPainter(progress: progress, color: color),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                timeDisplay,
+                style: TextStyle(
+                  color: isActive ? Colors.white : Colors.white38,
+                  fontSize: 52,
+                  fontWeight: FontWeight.w200,
+                  letterSpacing: 4,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              if (isActive)
+                Container(
+                  margin: const EdgeInsets.only(top: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    'جاري...',
+                    style: TextStyle(color: color, fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  _RingPainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 8;
+    const strokeWidth = 8.0;
+
+    final trackPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.08)
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(center, radius, trackPaint);
+
+    if (progress > 0) {
+      final progressPaint = Paint()
+        ..color = color
+        ..strokeWidth = strokeWidth
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round;
+
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        -pi / 2,
+        2 * pi * progress,
+        false,
+        progressPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) => old.progress != progress;
+}
+
+class _MinutePicker extends StatelessWidget {
+  final String label;
+  final int minutes;
+  final ValueChanged<int> onChanged;
+  final Color color;
+  final bool enabled;
+
+  const _MinutePicker({
+    required this.label,
+    required this.minutes,
+    required this.onChanged,
+    required this.color,
+    required this.enabled,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white54, fontSize: 14),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _StepButton(
+              icon: Icons.remove,
+              onTap: enabled && minutes > 1
+                  ? () => onChanged(minutes - 1)
+                  : null,
+              color: color,
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: enabled ? () => _showInputDialog(context) : null,
+              child: Container(
+                width: 90,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: color.withValues(alpha: 0.3)),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '$minutes min',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _StepButton(
+              icon: Icons.add,
+              onTap: enabled && minutes < 120
+                  ? () => onChanged(minutes + 1)
+                  : null,
+              color: color,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _showInputDialog(BuildContext context) {
+    final ctrl = TextEditingController(text: '$minutes');
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF0F3460),
+        title: Text(label, style: const TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          style: const TextStyle(color: Colors.white, fontSize: 24),
+          decoration: InputDecoration(
+            suffixText: 'min',
+            suffixStyle: TextStyle(color: color),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: color),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: color, width: 2),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () {
+              final v = int.tryParse(ctrl.text) ?? minutes;
+              onChanged(v.clamp(1, 120));
+              Navigator.pop(context);
+            },
+            child: Text('تأكيد', style: TextStyle(color: color)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  final Color color;
+
+  const _StepButton({required this.icon, required this.onTap, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: onTap != null ? color.withValues(alpha: 0.15) : Colors.transparent,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: onTap != null ? color.withValues(alpha: 0.4) : Colors.white12,
+          ),
+        ),
+        child: Icon(
+          icon,
+          color: onTap != null ? color : Colors.white24,
+          size: 20,
+        ),
+      ),
+    );
+  }
+}
+
+class _ControlButtons extends StatelessWidget {
+  final bool isRunning;
+  final Phase currentPhase;
+  final VoidCallback onStart;
+  final VoidCallback onPause;
+  final VoidCallback onReset;
+  final Color color;
+
+  const _ControlButtons({
+    required this.isRunning,
+    required this.currentPhase,
+    required this.onStart,
+    required this.onPause,
+    required this.onReset,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (currentPhase != Phase.idle)
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: _IconBtn(
+              icon: Icons.refresh,
+              onTap: onReset,
+              color: Colors.white38,
+              size: 52,
+            ),
+          ),
+        _MainBtn(
+          isRunning: isRunning,
+          onStart: onStart,
+          onPause: onPause,
+          color: color,
+        ),
+      ],
+    );
+  }
+}
+
+class _MainBtn extends StatelessWidget {
+  final bool isRunning;
+  final VoidCallback onStart;
+  final VoidCallback onPause;
+  final Color color;
+
+  const _MainBtn({
+    required this.isRunning,
+    required this.onStart,
+    required this.onPause,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: isRunning ? onPause : onStart,
+      child: Container(
+        width: 72,
+        height: 72,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 20, spreadRadius: 2),
+          ],
+        ),
+        child: Icon(
+          isRunning ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          color: Colors.white,
+          size: 36,
+        ),
+      ),
+    );
+  }
+}
+
+class _IconBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  final Color color;
+  final double size;
+
+  const _IconBtn({
+    required this.icon,
+    required this.onTap,
+    required this.color,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Icon(icon, color: color, size: size * 0.45),
+      ),
+    );
+  }
+}
+
+class _CycleSelector extends StatelessWidget {
+  final int value;
+  final ValueChanged<int>? onChanged;
+
+  const _CycleSelector({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          '$value',
+          style: TextStyle(
+            color: onChanged != null ? Colors.white : Colors.white38,
+            fontSize: 96,
+            fontWeight: FontWeight.w100,
+            height: 1,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          value == 1 ? 'دورة واحدة' : '$value دورات',
+          style: const TextStyle(color: Colors.white54, fontSize: 16),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _StepButton(
+              icon: Icons.remove,
+              onTap: onChanged != null && value > 1
+                  ? () => onChanged!(value - 1)
+                  : null,
+              color: const Color(0xFF3498DB),
+            ),
+            const SizedBox(width: 32),
+            _StepButton(
+              icon: Icons.add,
+              onTap: onChanged != null && value < 20
+                  ? () => onChanged!(value + 1)
+                  : null,
+              color: const Color(0xFF3498DB),
+            ),
+          ],
+        ),
+        if (onChanged == null) ...[
+          const SizedBox(height: 12),
+          const Text(
+            'مش ممكن تغير الدورات أثناء الشغل',
+            style: TextStyle(color: Colors.white30, fontSize: 12),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _CycleProgress extends StatelessWidget {
+  final int currentCycle;
+  final int totalCycles;
+  final Phase currentPhase;
+
+  const _CycleProgress({
+    required this.currentCycle,
+    required this.totalCycles,
+    required this.currentPhase,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      alignment: WrapAlignment.center,
+      children: List.generate(totalCycles, (i) {
+        final cycleNum = i + 1;
+        final isDone = cycleNum < currentCycle;
+        final isCurrent = cycleNum == currentCycle;
+        final isBreak = isCurrent && currentPhase == Phase.breakTime;
+
+        Color bgColor;
+        Color borderColor;
+        Widget child;
+
+        if (isDone) {
+          bgColor = const Color(0xFFE74C3C).withValues(alpha: 0.3);
+          borderColor = const Color(0xFFE74C3C);
+          child = const Icon(Icons.check, color: Color(0xFFE74C3C), size: 18);
+        } else if (isCurrent) {
+          bgColor = isBreak
+              ? const Color(0xFF2ECC71).withValues(alpha: 0.2)
+              : const Color(0xFFE74C3C).withValues(alpha: 0.2);
+          borderColor = isBreak ? const Color(0xFF2ECC71) : const Color(0xFFE74C3C);
+          child = Text(
+            '$cycleNum',
+            style: TextStyle(
+              color: borderColor,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+          );
+        } else {
+          bgColor = Colors.transparent;
+          borderColor = Colors.white12;
+          child = Text(
+            '$cycleNum',
+            style: const TextStyle(color: Colors.white24, fontSize: 14),
+          );
+        }
+
+        return Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: bgColor,
+            shape: BoxShape.circle,
+            border: Border.all(color: borderColor, width: isCurrent ? 2 : 1),
+          ),
+          alignment: Alignment.center,
+          child: child,
+        );
+      }),
+    );
+  }
+}
+
+// ─── Sound Picker Card ───────────────────────────────────────────────────────
+
+class _SoundPickerCard extends StatelessWidget {
+  final String? soundPath;
+  final VoidCallback onPick;
+  final VoidCallback onPreview;
+  final VoidCallback onClear;
+
+  const _SoundPickerCard({
+    required this.soundPath,
+    required this.onPick,
+    required this.onPreview,
+    required this.onClear,
+  });
+
+  String get _fileName {
+    if (soundPath == null) return 'مفيش صوت مختار';
+    return soundPath!.split(Platform.pathSeparator).last;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFFE74C3C);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: soundPath != null ? accent.withValues(alpha: 0.4) : Colors.white12,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                soundPath != null ? Icons.music_note : Icons.music_off,
+                color: soundPath != null ? accent : Colors.white38,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'صوت التنبيه',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _fileName,
+            style: TextStyle(
+              color: soundPath != null ? Colors.white70 : Colors.white30,
+              fontSize: 12,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _SoundBtn(
+                  label: 'Browse',
+                  icon: Icons.folder_open_outlined,
+                  color: accent,
+                  onTap: onPick,
+                ),
+              ),
+              if (soundPath != null) ...[
+                const SizedBox(width: 10),
+                _SoundBtn(
+                  label: 'Test',
+                  icon: Icons.play_circle_outline,
+                  color: const Color(0xFF2ECC71),
+                  onTap: onPreview,
+                ),
+                const SizedBox(width: 10),
+                _SoundBtn(
+                  label: 'Remove',
+                  icon: Icons.delete_outline,
+                  color: Colors.white38,
+                  onTap: onClear,
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SoundBtn extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _SoundBtn({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: color, size: 16),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(color: color, fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+}
